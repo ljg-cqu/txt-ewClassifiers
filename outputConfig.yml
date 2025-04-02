@@ -1,0 +1,5 @@
+includePhonetic: true
+includeOrigin: true
+includeSynonyms: true
+includeAntonyms: true
+filterDefinitionsWithoutExamples: false

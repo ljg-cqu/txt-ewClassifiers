@@ -1,0 +1,2 @@
+httpProxy: "http://127.0.0.1:33210"
+httpsProxy: "http://127.0.0.1:33210"
