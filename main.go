@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,6 +29,7 @@ type OutputConfig struct {
 	FilterNoExample          bool `yaml:"filterDefinitionsWithoutExamples"`
 	GenerateExplanations     bool `yaml:"generateExplanations"`     // Toggle for explanation files
 	GenerateExampleSentences bool `yaml:"generateExampleSentences"` // Toggle for example sentences files
+	MaxExampleSentences      int  `yaml:"maxExampleSentences"`      // Maximum number of example sentences per word
 }
 
 type QueryConfig struct {
@@ -165,6 +167,7 @@ func loadConfig() OutputConfig {
 		FilterNoExample:          false,
 		GenerateExplanations:     true, // Default to true for backward compatibility
 		GenerateExampleSentences: true, // Default to true for example sentences files
+		MaxExampleSentences:      0,    // Default to 0 meaning no limit
 	}
 
 	configPath := "outputConfig.yml"
@@ -553,18 +556,53 @@ func generateExampleSentencesContent(word string) string {
 	capitalized := capitalizePhrase(word)
 	output.WriteString(capitalized + "\n")
 
-	hasExamples := false
+	// Collect all examples first
+	var examples []string
 	for _, def := range cachedData.Definitions {
 		if def.Example != "" {
 			// Make sure the first letter is capitalized
 			example := capitalizeSentence(def.Example)
-			output.WriteString("\t" + example + "\n")
-			hasExamples = true
+			examples = append(examples, example)
 		}
 	}
 
-	if !hasExamples {
+	if len(examples) == 0 {
 		return ""
+	}
+
+	// Apply max example sentence limit if configured
+	maxExamples := config.MaxExampleSentences
+	totalExamples := len(examples)
+
+	// If maxExamples is 0 or greater than or equal to total examples, use all examples
+	if maxExamples == 0 || maxExamples >= totalExamples {
+		for _, example := range examples {
+			output.WriteString("\t" + example + "\n")
+		}
+	} else {
+		// Randomly select maxExamples unique examples
+		// Create a copy of the examples slice to avoid modifying the original
+		examplesCopy := make([]string, len(examples))
+		copy(examplesCopy, examples)
+
+		// Initialize random seed
+		rand.Seed(time.Now().UnixNano())
+
+		// Select maxExamples unique examples
+		selectedExamples := make([]string, 0, maxExamples)
+		for i := 0; i < maxExamples; i++ {
+			// Generate random index
+			randIndex := rand.Intn(len(examplesCopy))
+			// Add the example at the random index to selected examples
+			selectedExamples = append(selectedExamples, examplesCopy[randIndex])
+			// Remove the selected example to avoid duplicates
+			examplesCopy = append(examplesCopy[:randIndex], examplesCopy[randIndex+1:]...)
+		}
+
+		// Write selected examples to output
+		for _, example := range selectedExamples {
+			output.WriteString("\t" + example + "\n")
+		}
 	}
 
 	return removeEmptyLines(output.String())
@@ -862,7 +900,7 @@ func processAllFiles(inputDir string) error {
 	defer allWordsFile.Close()
 	allWordsWriter := bufio.NewWriter(allWordsFile)
 
-	// Only create AllWords_ex.txt if toggle is enabled</light>
+	// Only create AllWords_ex.txt if toggle is enabled
 	var allWordsExFile *os.File
 	var allWordsExWriter *bufio.Writer
 	if config.GenerateExplanations {
