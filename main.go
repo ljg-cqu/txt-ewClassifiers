@@ -41,7 +41,7 @@ type OutputConfig struct {
 }
 
 type QueryConfig struct {
-	QueryUnknownWords bool `yaml:"queryUnknownWords"` // Whether to query words marked as unknown
+	QueryForUnknownWords bool `yaml:"queryForUnknownWords"` // Whether to query words marked as unknown
 }
 
 type ProxyConfig struct {
@@ -200,7 +200,7 @@ func loadConfig() OutputConfig {
 
 func loadQueryConfig() QueryConfig {
 	defaultConfig := QueryConfig{
-		QueryUnknownWords: false, // Default to not query unknown words
+		QueryForUnknownWords: false, // Default to not query unknown words
 	}
 
 	configPath := "queryConfig.yml"
@@ -403,7 +403,7 @@ func fetchWordDetails(word string) string {
 	// Check if the word is in the unknown words database
 	if _, isUnknown := wordUnknown[word]; isUnknown {
 		// If configured not to query unknown words, return empty result
-		if !queryConfig.QueryUnknownWords {
+		if !queryConfig.QueryForUnknownWords {
 			return fmt.Sprintf("%s\n\tNo details available.\n", capitalizePhrase(word))
 		}
 		// Otherwise, proceed with the query as normal
