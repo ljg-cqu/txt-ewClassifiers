@@ -4,3 +4,4 @@ includeSynonyms: true
 includeAntonyms: true
 filterDefinitionsWithoutExamples: false
 generateExplanations: true
+generateExampleSentences: true

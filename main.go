@@ -21,12 +21,13 @@ import (
 
 // Configuration structures
 type OutputConfig struct {
-	IncludePhonetic      bool `yaml:"includePhonetic"`
-	IncludeOrigin        bool `yaml:"includeOrigin"`
-	IncludeSynonyms      bool `yaml:"includeSynonyms"`
-	IncludeAntonyms      bool `yaml:"includeAntonyms"`
-	FilterNoExample      bool `yaml:"filterDefinitionsWithoutExamples"`
-	GenerateExplanations bool `yaml:"generateExplanations"` // New toggle option for explanation files</light>
+	IncludePhonetic          bool `yaml:"includePhonetic"`
+	IncludeOrigin            bool `yaml:"includeOrigin"`
+	IncludeSynonyms          bool `yaml:"includeSynonyms"`
+	IncludeAntonyms          bool `yaml:"includeAntonyms"`
+	FilterNoExample          bool `yaml:"filterDefinitionsWithoutExamples"`
+	GenerateExplanations     bool `yaml:"generateExplanations"`     // Toggle for explanation files
+	GenerateExampleSentences bool `yaml:"generateExampleSentences"` // Toggle for example sentences files
 }
 
 type ProxyConfig struct {
@@ -80,6 +81,13 @@ func capitalizePhrase(phrase string) string {
 	return strings.Join(words, " ")
 }
 
+func capitalizeSentence(sentence string) string {
+	if len(sentence) == 0 {
+		return ""
+	}
+	return strings.ToUpper(string(sentence[0])) + sentence[1:]
+}
+
 func splitSlashSeparatedWords(text string) []string {
 	parts := strings.Split(text, "/")
 	for i, part := range parts {
@@ -118,12 +126,13 @@ func sortByFrequency(counts map[string]int) []string {
 // Configuration loading
 func loadConfig() OutputConfig {
 	defaultConfig := OutputConfig{
-		IncludePhonetic:      true,
-		IncludeOrigin:        true,
-		IncludeSynonyms:      true,
-		IncludeAntonyms:      true,
-		FilterNoExample:      false,
-		GenerateExplanations: true, // Default to true for backward compatibility
+		IncludePhonetic:          true,
+		IncludeOrigin:            true,
+		IncludeSynonyms:          true,
+		IncludeAntonyms:          true,
+		FilterNoExample:          false,
+		GenerateExplanations:     true, // Default to true for backward compatibility
+		GenerateExampleSentences: true, // Default to true for example sentences files
 	}
 
 	configPath := "outputConfig.yml"
@@ -395,47 +404,60 @@ func fetchWordDetails(word string) string {
 	return output.String()
 }
 
+// Function to generate example sentences file for a word
+func generateExampleSentencesContent(word string) string {
+	word = strings.ToLower(word)
+	cachedData, exists := wordCache[word]
+
+	if !exists || len(cachedData.Definitions) == 0 {
+		return ""
+	}
+
+	var output strings.Builder
+	capitalized := capitalizePhrase(word)
+	output.WriteString(capitalized + "\n")
+
+	hasExamples := false
+	for _, def := range cachedData.Definitions {
+		if def.Example != "" {
+			// Make sure the first letter is capitalized
+			example := capitalizeSentence(def.Example)
+			output.WriteString("\t" + example + "\n")
+			hasExamples = true
+		}
+	}
+
+	if !hasExamples {
+		return ""
+	}
+
+	return output.String()
+}
+
 func printProgress(stage string, item string, current, total int) {
-
 	percentage := int((float64(current) / float64(total)) * 100)
-
 	fmt.Printf("\r%-80s", " ") // Clear line
-
 	fmt.Printf("\r%s: %s (%d of %d) - %d%%", stage, capitalizePhrase(item), current, total, percentage)
-
 }
 
 func setupLogging() {
-
 	var err error
-
 	logFile, err = os.OpenFile("log.txt", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-
 	if err == nil {
-
 		log.SetOutput(logFile)
-
 		log.SetFlags(log.LstdFlags)
-
 	}
-
 }
 
 // Read and process a single file, returning the categorized words and all words
-
 func processFile(inputFile string) (map[string][]string, map[string]int, error) {
-
 	// Read input file
-
 	file, err := os.Open(inputFile)
-
 	if err != nil {
-
 		return nil, nil, err
-
 	}
-
 	defer file.Close()
+
 	scanner := bufio.NewScanner(file)
 	var content string
 	for scanner.Scan() {
@@ -570,6 +592,14 @@ func processAllFiles(inputDir string) error {
 		}
 	}
 
+	exampleSentencesFiles := map[string]string{}
+	if config.GenerateExampleSentences {
+		// Only setup example sentences files if the toggle is enabled
+		for category, file := range outputFiles {
+			exampleSentencesFiles[category] = strings.Replace(file, ".txt", "_es.txt", 1)
+		}
+	}
+
 	// Get all unique words and sort by frequency
 	sortedAllWords := sortByFrequency(allWordsDict)
 	totalUniqueWords := len(sortedAllWords)
@@ -598,7 +628,6 @@ func processAllFiles(inputDir string) error {
 		// Only create explanation file if the toggle is enabled
 		var exFile *os.File
 		var exWriter *bufio.Writer
-
 		if config.GenerateExplanations {
 			exFilePath := explanationFiles[category]
 			exFile, err = os.Create(exFilePath)
@@ -607,6 +636,19 @@ func processAllFiles(inputDir string) error {
 			}
 			defer exFile.Close()
 			exWriter = bufio.NewWriter(exFile)
+		}
+
+		// Only create example sentences file if the toggle is enabled
+		var esFile *os.File
+		var esWriter *bufio.Writer
+		if config.GenerateExampleSentences {
+			esFilePath := exampleSentencesFiles[category]
+			esFile, err = os.Create(esFilePath)
+			if err != nil {
+				return fmt.Errorf("failed to create example sentences file for %s: %v", category, err)
+			}
+			defer esFile.Close()
+			esWriter = bufio.NewWriter(esFile)
 		}
 
 		log.Printf("\nProcessing %s category (%d words):\n", category, len(sortedWords))
@@ -624,11 +666,22 @@ func processAllFiles(inputDir string) error {
 			if config.GenerateExplanations {
 				exWriter.WriteString(fetchWordDetails(word) + "\n")
 			}
+
+			// Only write to example sentences file if toggle is enabled
+			if config.GenerateExampleSentences {
+				esContent := generateExampleSentencesContent(word)
+				if esContent != "" {
+					esWriter.WriteString(esContent)
+				}
+			}
 		}
 
 		wordWriter.Flush()
 		if config.GenerateExplanations {
 			exWriter.Flush()
+		}
+		if config.GenerateExampleSentences {
+			esWriter.Flush()
 		}
 
 		log.Printf("\n- Category '%s' processed: %d words\n", category, len(sortedWords))
@@ -650,7 +703,6 @@ func processAllFiles(inputDir string) error {
 	// Only create AllWords_ex.txt if toggle is enabled
 	var allWordsExFile *os.File
 	var allWordsExWriter *bufio.Writer
-
 	if config.GenerateExplanations {
 		allWordsExPath := filepath.Join(outputDir, "AllWords_ex.txt")
 		allWordsExFile, err = os.Create(allWordsExPath)
@@ -661,12 +713,32 @@ func processAllFiles(inputDir string) error {
 		allWordsExWriter = bufio.NewWriter(allWordsExFile)
 	}
 
+	// Only create AllWords_es.txt if toggle is enabled
+	var allWordsEsFile *os.File
+	var allWordsEsWriter *bufio.Writer
+	if config.GenerateExampleSentences {
+		allWordsEsPath := filepath.Join(outputDir, "AllWords_es.txt")
+		allWordsEsFile, err = os.Create(allWordsEsPath)
+		if err != nil {
+			return fmt.Errorf("failed to create AllWords_es.txt file: %v", err)
+		}
+		defer allWordsEsFile.Close()
+		allWordsEsWriter = bufio.NewWriter(allWordsEsFile)
+	}
+
 	for i, word := range sortedAllWords {
 		allWordsWriter.WriteString(capitalizePhrase(word) + "\n")
-		printProgress("Processing All Words explanations", word, i+1, totalUniqueWords)
+		printProgress("Processing All Words", word, i+1, totalUniqueWords)
 
 		if config.GenerateExplanations {
 			allWordsExWriter.WriteString(fetchWordDetails(word) + "\n")
+		}
+
+		if config.GenerateExampleSentences {
+			esContent := generateExampleSentencesContent(word)
+			if esContent != "" {
+				allWordsEsWriter.WriteString(esContent)
+			}
 		}
 	}
 
@@ -678,8 +750,14 @@ func processAllFiles(inputDir string) error {
 		fmt.Println("- AllWords_ex.txt complete")
 	}
 
-	log.Println("\n- AllWords.txt complete")
-	fmt.Println("\n- AllWords.txt complete")
+	if config.GenerateExampleSentences {
+		allWordsEsWriter.Flush()
+		log.Println("- AllWords_es.txt complete")
+		fmt.Println("- AllWords_es.txt complete")
+	}
+
+	log.Println("- AllWords.txt complete")
+	fmt.Println("- AllWords.txt complete")
 
 	// Report results
 	log.Printf("\n===== Analysis Results =====\n")
@@ -690,6 +768,11 @@ func processAllFiles(inputDir string) error {
 	} else {
 		log.Printf("Word explanation files were not generated (disabled in config).\n")
 	}
+	if config.GenerateExampleSentences {
+		log.Printf("Example sentences files were generated.\n")
+	} else {
+		log.Printf("Example sentences files were not generated (disabled in config).\n")
+	}
 
 	fmt.Printf("\n===== Analysis Results =====\n")
 	fmt.Printf("Total unique words after deduplication: %d\n", totalUniqueWords)
@@ -698,6 +781,11 @@ func processAllFiles(inputDir string) error {
 		fmt.Printf("Word explanation files were generated.\n")
 	} else {
 		fmt.Printf("Word explanation files were not generated (disabled in config).\n")
+	}
+	if config.GenerateExampleSentences {
+		fmt.Printf("Example sentences files were generated.\n")
+	} else {
+		fmt.Printf("Example sentences files were not generated (disabled in config).\n")
 	}
 
 	return nil
