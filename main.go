@@ -257,11 +257,12 @@ func fetchWordDetails(word string) string {
 		}
 
 		// Extract phonetics
-		if phonetics, ok := result[0]["phonetics"].([]interface{}); ok {
+		if phonetics, ok := result[0]["phonetics"].([]interface{}); ok && cachedData.Phonetic == "" {
 			for _, p := range phonetics {
 				if phoneticMap, ok := p.(map[string]interface{}); ok {
 					if text, ok := phoneticMap["text"].(string); ok && text != "" {
 						cachedData.Phonetic = text
+						break
 					}
 				}
 			}
@@ -336,40 +337,56 @@ func fetchWordDetails(word string) string {
 		saveWordCache()
 	}
 
-	// Format output
+	// Format output with the new layout
 	var output strings.Builder
-	output.WriteString(fmt.Sprintf("%s\n", capitalizePhrase(word)))
+	capitalized := capitalizePhrase(word)
 
-	if config.IncludePhonetic && cachedData.Phonetic != "" {
-		output.WriteString(fmt.Sprintf("\tPhonetic: %s\n", cachedData.Phonetic))
+	// Put word and phonetic on the same line
+	if cachedData.Phonetic != "" && config.IncludePhonetic {
+		output.WriteString(fmt.Sprintf("%s %s\n", capitalized, cachedData.Phonetic))
+	} else {
+		output.WriteString(fmt.Sprintf("%s\n", capitalized))
 	}
 
+	// Add origin if available and enabled
 	if config.IncludeOrigin && cachedData.Origin != "" {
 		output.WriteString(fmt.Sprintf("\tOrigin: %s\n", cachedData.Origin))
 	}
 
+	// Check if there are definitions available
 	if len(cachedData.Definitions) == 0 {
-		output.WriteString("\tNo details available.\n")
+		output.WriteString(fmt.Sprintf("\t%s: No details available.\n", capitalized))
 		return output.String()
 	}
 
+	// Process definitions with the new format
 	for i, def := range cachedData.Definitions {
 		if config.FilterNoExample && def.Example == "" {
 			continue
 		}
 
-		output.WriteString(fmt.Sprintf("\t%d. (%s) %s\n", i+1, def.PartOfSpeech, def.Definition))
+		defNumber := i + 1
 
+		// Write definition with number and word prefix
+		output.WriteString(fmt.Sprintf("\t%s %d, %s: %s\n",
+			capitalized, defNumber, def.PartOfSpeech, def.Definition))
+
+		// Add example if available, with word and number prefix
 		if def.Example != "" {
-			output.WriteString(fmt.Sprintf("\t   Example: %s\n", def.Example))
+			output.WriteString(fmt.Sprintf("\t\t%s %d Example: %s\n",
+				capitalized, defNumber, def.Example))
 		}
 
+		// Add synonyms if enabled and available, with word and number prefix
 		if config.IncludeSynonyms && len(def.Synonyms) > 0 {
-			output.WriteString(fmt.Sprintf("\t   Synonyms: %s\n", strings.Join(def.Synonyms, ", ")))
+			output.WriteString(fmt.Sprintf("\t\t%s %d Synonyms: %s\n",
+				capitalized, defNumber, strings.Join(def.Synonyms, ", ")))
 		}
 
+		// Add antonyms if enabled and available, with word and number prefix
 		if config.IncludeAntonyms && len(def.Antonyms) > 0 {
-			output.WriteString(fmt.Sprintf("\t   Antonyms: %s\n", strings.Join(def.Antonyms, ", ")))
+			output.WriteString(fmt.Sprintf("\t\t%s %d Antonyms: %s\n",
+				capitalized, defNumber, strings.Join(def.Antonyms, ", ")))
 		}
 	}
 
