@@ -3,3 +3,4 @@ includeOrigin: true
 includeSynonyms: true
 includeAntonyms: true
 filterDefinitionsWithoutExamples: false
+generateExplanations: true

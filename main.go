@@ -21,11 +21,12 @@ import (
 
 // Configuration structures
 type OutputConfig struct {
-	IncludePhonetic bool `yaml:"includePhonetic"`
-	IncludeOrigin   bool `yaml:"includeOrigin"`
-	IncludeSynonyms bool `yaml:"includeSynonyms"`
-	IncludeAntonyms bool `yaml:"includeAntonyms"`
-	FilterNoExample bool `yaml:"filterDefinitionsWithoutExamples"`
+	IncludePhonetic      bool `yaml:"includePhonetic"`
+	IncludeOrigin        bool `yaml:"includeOrigin"`
+	IncludeSynonyms      bool `yaml:"includeSynonyms"`
+	IncludeAntonyms      bool `yaml:"includeAntonyms"`
+	FilterNoExample      bool `yaml:"filterDefinitionsWithoutExamples"`
+	GenerateExplanations bool `yaml:"generateExplanations"` // New toggle option for explanation files</light>
 }
 
 type ProxyConfig struct {
@@ -117,11 +118,12 @@ func sortByFrequency(counts map[string]int) []string {
 // Configuration loading
 func loadConfig() OutputConfig {
 	defaultConfig := OutputConfig{
-		IncludePhonetic: true,
-		IncludeOrigin:   true,
-		IncludeSynonyms: true,
-		IncludeAntonyms: true,
-		FilterNoExample: false,
+		IncludePhonetic:      true,
+		IncludeOrigin:        true,
+		IncludeSynonyms:      true,
+		IncludeAntonyms:      true,
+		FilterNoExample:      false,
+		GenerateExplanations: true, // Default to true for backward compatibility
 	}
 
 	configPath := "outputConfig.yml"
@@ -561,8 +563,11 @@ func processAllFiles(inputDir string) error {
 	}
 
 	explanationFiles := map[string]string{}
-	for category, file := range outputFiles {
-		explanationFiles[category] = strings.Replace(file, ".txt", "_ex.txt", 1)
+	if config.GenerateExplanations {
+		// Only setup explanation files if the toggle is enabled
+		for category, file := range outputFiles {
+			explanationFiles[category] = strings.Replace(file, ".txt", "_ex.txt", 1)
+		}
 	}
 
 	// Get all unique words and sort by frequency
@@ -581,23 +586,28 @@ func processAllFiles(inputDir string) error {
 		}
 
 		filePath := outputFiles[category]
-		exFilePath := explanationFiles[category]
 
-		// Create files
+		// Create word list file (always created)
 		wordFile, err := os.Create(filePath)
 		if err != nil {
 			return fmt.Errorf("failed to create output file for %s: %v", category, err)
 		}
 		defer wordFile.Close()
-
-		exFile, err := os.Create(exFilePath)
-		if err != nil {
-			return fmt.Errorf("failed to create explanation file for %s: %v", category, err)
-		}
-		defer exFile.Close()
-
 		wordWriter := bufio.NewWriter(wordFile)
-		exWriter := bufio.NewWriter(exFile)
+
+		// Only create explanation file if the toggle is enabled
+		var exFile *os.File
+		var exWriter *bufio.Writer
+
+		if config.GenerateExplanations {
+			exFilePath := explanationFiles[category]
+			exFile, err = os.Create(exFilePath)
+			if err != nil {
+				return fmt.Errorf("failed to create explanation file for %s: %v", category, err)
+			}
+			defer exFile.Close()
+			exWriter = bufio.NewWriter(exFile)
+		}
 
 		log.Printf("\nProcessing %s category (%d words):\n", category, len(sortedWords))
 		fmt.Printf("\nProcessing %s category (%d words):\n", category, len(sortedWords))
@@ -609,11 +619,18 @@ func processAllFiles(inputDir string) error {
 				word,
 				i+1,
 				len(sortedWords))
-			exWriter.WriteString(fetchWordDetails(word) + "\n")
+
+			// Only write to explanation file if toggle is enabled
+			if config.GenerateExplanations {
+				exWriter.WriteString(fetchWordDetails(word) + "\n")
+			}
 		}
 
 		wordWriter.Flush()
-		exWriter.Flush()
+		if config.GenerateExplanations {
+			exWriter.Flush()
+		}
+
 		log.Printf("\n- Category '%s' processed: %d words\n", category, len(sortedWords))
 		fmt.Printf("\n- Category '%s' processed: %d words\n", category, len(sortedWords))
 	}
@@ -621,46 +638,67 @@ func processAllFiles(inputDir string) error {
 	log.Println("\nGenerating final outputs...")
 	fmt.Println("\nGenerating final outputs...")
 
-	// Write AllWords files
+	// Always create AllWords.txt file
 	allWordsPath := filepath.Join(outputDir, "AllWords.txt")
-	allWordsExPath := filepath.Join(outputDir, "AllWords_ex.txt")
-
 	allWordsFile, err := os.Create(allWordsPath)
 	if err != nil {
 		return fmt.Errorf("failed to create AllWords.txt file: %v", err)
 	}
 	defer allWordsFile.Close()
-
-	allWordsExFile, err := os.Create(allWordsExPath)
-	if err != nil {
-		return fmt.Errorf("failed to create AllWords_ex.txt file: %v", err)
-	}
-	defer allWordsExFile.Close()
-
 	allWordsWriter := bufio.NewWriter(allWordsFile)
-	allWordsExWriter := bufio.NewWriter(allWordsExFile)
+
+	// Only create AllWords_ex.txt if toggle is enabled
+	var allWordsExFile *os.File
+	var allWordsExWriter *bufio.Writer
+
+	if config.GenerateExplanations {
+		allWordsExPath := filepath.Join(outputDir, "AllWords_ex.txt")
+		allWordsExFile, err = os.Create(allWordsExPath)
+		if err != nil {
+			return fmt.Errorf("failed to create AllWords_ex.txt file: %v", err)
+		}
+		defer allWordsExFile.Close()
+		allWordsExWriter = bufio.NewWriter(allWordsExFile)
+	}
 
 	for i, word := range sortedAllWords {
 		allWordsWriter.WriteString(capitalizePhrase(word) + "\n")
 		printProgress("Processing All Words explanations", word, i+1, totalUniqueWords)
-		allWordsExWriter.WriteString(fetchWordDetails(word) + "\n")
+
+		if config.GenerateExplanations {
+			allWordsExWriter.WriteString(fetchWordDetails(word) + "\n")
+		}
 	}
 
 	allWordsWriter.Flush()
-	allWordsExWriter.Flush()
+
+	if config.GenerateExplanations {
+		allWordsExWriter.Flush()
+		log.Println("- AllWords_ex.txt complete")
+		fmt.Println("- AllWords_ex.txt complete")
+	}
+
 	log.Println("\n- AllWords.txt complete")
 	fmt.Println("\n- AllWords.txt complete")
-	log.Println("- AllWords_ex.txt complete")
-	fmt.Println("- AllWords_ex.txt complete")
 
 	// Report results
 	log.Printf("\n===== Analysis Results =====\n")
 	log.Printf("Total unique words after deduplication: %d\n", totalUniqueWords)
 	log.Printf("Results written to directory: %s\n", outputDir)
+	if config.GenerateExplanations {
+		log.Printf("Word explanation files were generated.\n")
+	} else {
+		log.Printf("Word explanation files were not generated (disabled in config).\n")
+	}
 
 	fmt.Printf("\n===== Analysis Results =====\n")
 	fmt.Printf("Total unique words after deduplication: %d\n", totalUniqueWords)
 	fmt.Printf("Results written to directory: %s\n", outputDir)
+	if config.GenerateExplanations {
+		fmt.Printf("Word explanation files were generated.\n")
+	} else {
+		fmt.Printf("Word explanation files were not generated (disabled in config).\n")
+	}
 
 	return nil
 }
