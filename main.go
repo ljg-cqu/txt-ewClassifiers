@@ -30,6 +30,10 @@ type OutputConfig struct {
 	GenerateExampleSentences bool `yaml:"generateExampleSentences"` // Toggle for example sentences files
 }
 
+type QueryConfig struct {
+	QueryUnknownWords bool `yaml:"queryUnknownWords"` // Whether to query words marked as unknown
+}
+
 type ProxyConfig struct {
 	HTTPProxy  string `yaml:"httpProxy"`
 	HTTPSProxy string `yaml:"httpsProxy"`
@@ -53,9 +57,12 @@ type WordCache struct {
 
 // Global variables
 var config OutputConfig
+var queryConfig QueryConfig
 var proxyConfig ProxyConfig
 var wordCache = make(map[string]WordCache)
+var wordUnknown = make(map[string]bool)
 var cachePath = "word_cache.json"
+var unknownPath = "word_unknown.json"
 var logFile *os.File
 
 // Helper functions
@@ -123,6 +130,31 @@ func sortByFrequency(counts map[string]int) []string {
 	return result
 }
 
+// Remove empty lines from the text
+func removeEmptyLines(text string) string {
+	lines := strings.Split(text, "\n")
+	var nonEmptyLines []string
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			nonEmptyLines = append(nonEmptyLines, line)
+		}
+	}
+	return strings.Join(nonEmptyLines, "\n")
+}
+
+// Deduplicate a slice of strings
+func deduplicateStrings(slice []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, item := range slice {
+		if !seen[item] {
+			seen[item] = true
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
 // Configuration loading
 func loadConfig() OutputConfig {
 	defaultConfig := OutputConfig{
@@ -148,6 +180,30 @@ func loadConfig() OutputConfig {
 	}
 
 	var config OutputConfig
+	if err := yaml.Unmarshal(yamlFile, &config); err != nil {
+		return defaultConfig
+	}
+	return config
+}
+
+func loadQueryConfig() QueryConfig {
+	defaultConfig := QueryConfig{
+		QueryUnknownWords: false, // Default to not query unknown words
+	}
+
+	configPath := "queryConfig.yml"
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		yamlData, _ := yaml.Marshal(defaultConfig)
+		ioutil.WriteFile(configPath, yamlData, 0644)
+		return defaultConfig
+	}
+
+	yamlFile, err := ioutil.ReadFile(configPath)
+	if err != nil {
+		return defaultConfig
+	}
+
+	var config QueryConfig
 	if err := yaml.Unmarshal(yamlFile, &config); err != nil {
 		return defaultConfig
 	}
@@ -203,6 +259,30 @@ func saveWordCache() {
 	ioutil.WriteFile(cachePath, data, 0644)
 }
 
+// Load unknown words
+func loadWordUnknown() {
+	if _, err := os.Stat(unknownPath); os.IsNotExist(err) {
+		return
+	}
+
+	data, err := ioutil.ReadFile(unknownPath)
+	if err != nil {
+		return
+	}
+
+	if err := json.Unmarshal(data, &wordUnknown); err != nil {
+		wordUnknown = make(map[string]bool)
+	}
+}
+
+func saveWordUnknown() {
+	data, err := json.MarshalIndent(wordUnknown, "", "  ")
+	if err != nil {
+		return
+	}
+	ioutil.WriteFile(unknownPath, data, 0644)
+}
+
 func createHTTPClient() *http.Client {
 	transport := &http.Transport{}
 
@@ -226,6 +306,17 @@ func createHTTPClient() *http.Client {
 
 func fetchWordDetails(word string) string {
 	word = strings.ToLower(word)
+
+	// Check if the word is in the unknown words database
+	if _, isUnknown := wordUnknown[word]; isUnknown {
+		// If configured not to query unknown words, return empty result
+		if !queryConfig.QueryUnknownWords {
+			return fmt.Sprintf("%s\n\tNo details available.\n", capitalizePhrase(word))
+		}
+		// Otherwise, proceed with the query as normal
+	}
+
+	// Check if the word is in the cache
 	cachedData, exists := wordCache[word]
 
 	if !exists {
@@ -233,6 +324,9 @@ func fetchWordDetails(word string) string {
 
 		req, err := http.NewRequest("GET", apiURL, nil)
 		if err != nil {
+			// Add to unknown words
+			wordUnknown[word] = true
+			saveWordUnknown()
 			return fmt.Sprintf("%s\n\tNo details available.\n", capitalizePhrase(word))
 		}
 
@@ -242,6 +336,9 @@ func fetchWordDetails(word string) string {
 		client := createHTTPClient()
 		resp, err := client.Do(req)
 		if err != nil || resp.StatusCode != http.StatusOK {
+			// Add to unknown words
+			wordUnknown[word] = true
+			saveWordUnknown()
 			return fmt.Sprintf("%s\n\tNo details available.\n", capitalizePhrase(word))
 		}
 		defer resp.Body.Close()
@@ -250,6 +347,9 @@ func fetchWordDetails(word string) string {
 
 		var result []map[string]interface{}
 		if err := json.Unmarshal(bodyBytes, &result); err != nil || len(result) == 0 {
+			// Add to unknown words
+			wordUnknown[word] = true
+			saveWordUnknown()
 			return fmt.Sprintf("%s\n\tNo details available.\n", capitalizePhrase(word))
 		}
 
@@ -343,9 +443,22 @@ func fetchWordDetails(word string) string {
 			}
 		}
 
-		// Save to cache
-		wordCache[strings.ToLower(word)] = cachedData
-		saveWordCache()
+		// If definitions were found, save to cache and remove from unknown words if it was there
+		if len(cachedData.Definitions) > 0 {
+			wordCache[strings.ToLower(word)] = cachedData
+			saveWordCache()
+
+			// If the word was previously unknown, remove it from unknown words
+			if _, wasUnknown := wordUnknown[word]; wasUnknown {
+				delete(wordUnknown, word)
+				saveWordUnknown()
+			}
+		} else {
+			// No definitions found, mark as unknown
+			wordUnknown[word] = true
+			saveWordUnknown()
+			return fmt.Sprintf("%s\n\tNo details available.\n", capitalizePhrase(word))
+		}
 	}
 
 	// Format output with the new layout
@@ -401,12 +514,35 @@ func fetchWordDetails(word string) string {
 		}
 	}
 
-	return output.String()
+	return removeEmptyLines(output.String())
+}
+
+// Check if a word has details
+func hasWordDetails(word string) bool {
+	word = strings.ToLower(word)
+
+	// Check if the word is in the unknown words database
+	if _, isUnknown := wordUnknown[word]; isUnknown {
+		return false
+	}
+
+	// Check if the word is in the cache and has definitions
+	if cachedData, exists := wordCache[word]; exists {
+		return len(cachedData.Definitions) > 0
+	}
+
+	return false
 }
 
 // Function to generate example sentences file for a word
 func generateExampleSentencesContent(word string) string {
 	word = strings.ToLower(word)
+
+	// Skip if word is in unknown words
+	if _, isUnknown := wordUnknown[word]; isUnknown {
+		return ""
+	}
+
 	cachedData, exists := wordCache[word]
 
 	if !exists || len(cachedData.Definitions) == 0 {
@@ -431,7 +567,7 @@ func generateExampleSentencesContent(word string) string {
 		return ""
 	}
 
-	return output.String()
+	return removeEmptyLines(output.String())
 }
 
 func printProgress(stage string, item string, current, total int) {
@@ -600,9 +736,20 @@ func processAllFiles(inputDir string) error {
 		}
 	}
 
+	// Create a file for unknown words
+	unknownWordsPath := filepath.Join(outputDir, "UnknownWords.txt")
+	unknownWordsFile, err := os.Create(unknownWordsPath)
+	if err != nil {
+		return fmt.Errorf("failed to create UnknownWords.txt file: %v", err)
+	}
+	defer unknownWordsFile.Close()
+	unknownWordsWriter := bufio.NewWriter(unknownWordsFile)
+
 	// Get all unique words and sort by frequency
 	sortedAllWords := sortByFrequency(allWordsDict)
-	totalUniqueWords := len(sortedAllWords)
+
+	// Track unknown words
+	var unknownWords []string
 
 	// Write each category to separate files
 	for category, words := range allCategorizedWords {
@@ -654,24 +801,39 @@ func processAllFiles(inputDir string) error {
 		log.Printf("\nProcessing %s category (%d words):\n", category, len(sortedWords))
 		fmt.Printf("\nProcessing %s category (%d words):\n", category, len(sortedWords))
 
+		// Deduplicate the words
+		sortedWords = deduplicateStrings(sortedWords)
+
+		// Process each word
 		for i, word := range sortedWords {
-			wordWriter.WriteString(capitalizePhrase(word) + "\n")
 			printProgress(
 				fmt.Sprintf("Dictionary lookup (%s)", category),
 				word,
 				i+1,
 				len(sortedWords))
 
-			// Only write to explanation file if toggle is enabled
-			if config.GenerateExplanations {
-				exWriter.WriteString(fetchWordDetails(word) + "\n")
-			}
+			// Fetch word details and check if it's unknown
+			wordDetails := fetchWordDetails(word)
+			isUnknown := strings.Contains(wordDetails, "No details available.")
 
-			// Only write to example sentences file if toggle is enabled
-			if config.GenerateExampleSentences {
-				esContent := generateExampleSentencesContent(word)
-				if esContent != "" {
-					esWriter.WriteString(esContent)
+			if isUnknown {
+				// Add to unknown words list
+				unknownWords = append(unknownWords, capitalizePhrase(word))
+			} else {
+				// Only write known words to the word list file
+				wordWriter.WriteString(capitalizePhrase(word) + "\n")
+
+				// Only write to explanation file if toggle is enabled
+				if config.GenerateExplanations {
+					exWriter.WriteString(wordDetails)
+				}
+
+				// Only write to example sentences file if toggle is enabled
+				if config.GenerateExampleSentences {
+					esContent := generateExampleSentencesContent(word)
+					if esContent != "" {
+						esWriter.WriteString(esContent)
+					}
 				}
 			}
 		}
@@ -700,7 +862,7 @@ func processAllFiles(inputDir string) error {
 	defer allWordsFile.Close()
 	allWordsWriter := bufio.NewWriter(allWordsFile)
 
-	// Only create AllWords_ex.txt if toggle is enabled
+	// Only create AllWords_ex.txt if toggle is enabled</light>
 	var allWordsExFile *os.File
 	var allWordsExWriter *bufio.Writer
 	if config.GenerateExplanations {
@@ -726,12 +888,29 @@ func processAllFiles(inputDir string) error {
 		allWordsEsWriter = bufio.NewWriter(allWordsEsFile)
 	}
 
+	// Deduplicate unknown words list
+	unknownWords = deduplicateStrings(unknownWords)
+
+	// Write unknown words to UnknownWords.txt
+	for _, word := range unknownWords {
+		unknownWordsWriter.WriteString(word + "\n")
+	}
+	unknownWordsWriter.Flush()
+
+	// Process all words
+	sortedAllWords = deduplicateStrings(sortedAllWords)
 	for i, word := range sortedAllWords {
+		printProgress("Processing All Words", word, i+1, len(sortedAllWords))
+
+		// Skip unknown words in AllWords.txt and related files
+		if !hasWordDetails(word) {
+			continue
+		}
+
 		allWordsWriter.WriteString(capitalizePhrase(word) + "\n")
-		printProgress("Processing All Words", word, i+1, totalUniqueWords)
 
 		if config.GenerateExplanations {
-			allWordsExWriter.WriteString(fetchWordDetails(word) + "\n")
+			allWordsExWriter.WriteString(fetchWordDetails(word))
 		}
 
 		if config.GenerateExampleSentences {
@@ -758,10 +937,11 @@ func processAllFiles(inputDir string) error {
 
 	log.Println("- AllWords.txt complete")
 	fmt.Println("- AllWords.txt complete")
+	log.Println("- UnknownWords.txt complete")
+	fmt.Println("- UnknownWords.txt complete")
 
 	// Report results
 	log.Printf("\n===== Analysis Results =====\n")
-	log.Printf("Total unique words after deduplication: %d\n", totalUniqueWords)
 	log.Printf("Results written to directory: %s\n", outputDir)
 	if config.GenerateExplanations {
 		log.Printf("Word explanation files were generated.\n")
@@ -775,7 +955,6 @@ func processAllFiles(inputDir string) error {
 	}
 
 	fmt.Printf("\n===== Analysis Results =====\n")
-	fmt.Printf("Total unique words after deduplication: %d\n", totalUniqueWords)
 	fmt.Printf("Results written to directory: %s\n", outputDir)
 	if config.GenerateExplanations {
 		fmt.Printf("Word explanation files were generated.\n")
@@ -800,8 +979,10 @@ func main() {
 
 	// Load configuration and proxy settings
 	config = loadConfig()
+	queryConfig = loadQueryConfig()
 	proxyConfig = loadProxyConfig()
 	loadWordCache()
+	loadWordUnknown()
 
 	// Process all files in the "inputs" directory
 	inputDir := "inputs"
