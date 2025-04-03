@@ -16,9 +16,17 @@ import (
 	"time"
 	"unicode"
 
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/dialog"
 	"github.com/jdkato/prose/v2"
 	"gopkg.in/yaml.v2"
 )
+
+// InputConfig structure for input directory configuration
+type InputConfig struct {
+	InputDirectory string `yaml:"inputDirectory"`
+}
 
 // Configuration structures
 type OutputConfig struct {
@@ -61,6 +69,7 @@ type WordCache struct {
 var config OutputConfig
 var queryConfig QueryConfig
 var proxyConfig ProxyConfig
+var inputConfig InputConfig
 var wordCache = make(map[string]WordCache)
 var wordUnknown = make(map[string]bool)
 var cachePath = "word_cache.json"
@@ -236,6 +245,87 @@ func loadProxyConfig() ProxyConfig {
 		return defaultConfig
 	}
 	return config
+}
+
+// Load input directory configuration
+func loadInputConfig() InputConfig {
+	defaultConfig := InputConfig{
+		InputDirectory: "inputs",
+	}
+
+	configPath := "inputConfig.yml"
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		yamlData, _ := yaml.Marshal(defaultConfig)
+		ioutil.WriteFile(configPath, yamlData, 0644)
+		return defaultConfig
+	}
+
+	yamlFile, err := ioutil.ReadFile(configPath)
+	if err != nil {
+		return defaultConfig
+	}
+
+	var config InputConfig
+	if err := yaml.Unmarshal(yamlFile, &config); err != nil {
+		return defaultConfig
+	}
+	return config
+}
+
+// Check if directory exists and is valid
+func isValidDirectory(path string) bool {
+	if path == "" {
+		return false
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+
+	return info.IsDir()
+}
+
+// Show directory selection dialog
+func selectDirectoryGUI() (string, error) {
+	selectedDir := ""
+	done := make(chan struct{})
+
+	// Initialize Fyne application
+	a := app.New()
+	w := a.NewWindow("Select Input Directory")
+
+	// Show directory open dialog
+	dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
+		if err != nil {
+			log.Printf("Error selecting directory: %v\n", err)
+			selectedDir = ""
+		} else if uri == nil {
+			// User canceled
+			selectedDir = ""
+		} else {
+			selectedDir = uri.Path()
+		}
+		w.Close()
+		close(done)
+	}, w)
+
+	// Show and run window
+	w.Resize(fyne.NewSize(800, 600))
+	w.Show()
+
+	// Wait for directory selection to complete
+	go func() {
+		a.Run()
+	}()
+
+	<-done
+
+	if selectedDir == "" {
+		return "", fmt.Errorf("no directory selected")
+	}
+
+	return selectedDir, nil
 }
 
 // Cache management
@@ -685,8 +775,9 @@ func processFile(inputFile string) (map[string][]string, map[string]int, error) 
 
 // Process all files in the input directory
 func processAllFiles(inputDir string) error {
-	// Create output directory
-	outputDir := "outputs"
+	// Create output directory based on input directory name
+	inputDirName := filepath.Base(inputDir)
+	outputDir := inputDirName + "_ewClassifiers"
 	if err := os.MkdirAll(outputDir, os.ModePerm); err != nil {
 		return fmt.Errorf("failed to create output directory: %v", err)
 	}
@@ -1022,18 +1113,44 @@ func main() {
 	loadWordCache()
 	loadWordUnknown()
 
-	// Process all files in the "inputs" directory
-	inputDir := "inputs"
+	// Load input directory configuration
+	inputConfig = loadInputConfig()
+
+	// Determine input directory
+	var inputDir string
+
+	// First check if the input directory is configured in inputConfig.yml
+	if isValidDirectory(inputConfig.InputDirectory) {
+		log.Printf("Using configured input directory: %s\n", inputConfig.InputDirectory)
+		fmt.Printf("Using configured input directory: %s\n", inputConfig.InputDirectory)
+		inputDir = inputConfig.InputDirectory
+	} else {
+		// If not configured or invalid, let user select via GUI
+		log.Println("No valid input directory configured, prompting user to select one...")
+		fmt.Println("No valid input directory configured, prompting user to select one...")
+
+		selectedDir, err := selectDirectoryGUI()
+		if err != nil {
+			// Fallback to default "inputs" directory
+			inputDir = "inputs"
+			log.Printf("Falling back to default input directory: %s\n", inputDir)
+			fmt.Printf("Falling back to default input directory: %s\n", inputDir)
+		} else {
+			inputDir = selectedDir
+			log.Printf("Using selected directory: %s\n", inputDir)
+			fmt.Printf("Using selected directory: %s\n", inputDir)
+		}
+	}
 
 	// Create inputs directory if it doesn't exist
 	if _, err := os.Stat(inputDir); os.IsNotExist(err) {
 		if err := os.MkdirAll(inputDir, os.ModePerm); err != nil {
-			log.Fatalf("Failed to create inputs directory: %v", err)
-			fmt.Printf("Failed to create inputs directory: %v\n", err)
+			log.Fatalf("Failed to create input directory: %v", err)
+			fmt.Printf("Failed to create input directory: %v\n", err)
 			return
 		}
-		log.Println("Created inputs directory. Please place text files there and run the program again.")
-		fmt.Println("Created inputs directory. Please place text files there and run the program again.")
+		log.Printf("Created input directory '%s'. Please place text files there and run the program again.\n", inputDir)
+		fmt.Printf("Created input directory '%s'. Please place text files there and run the program again.\n", inputDir)
 		return
 	}
 
